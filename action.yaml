@@ -1,0 +1,87 @@
+name: "Create GitHub Release"
+description: "Creates a GitHub release using the RELEASE_NOTES file."
+author: "Frequenz Energy-as-a-Service GmbH"
+
+# Refer to the following link(s) for more information on inputs:
+# https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions#inputs
+inputs:
+  release_notes_file:
+    description: >
+      The file name of the release notes file. It must exist in the repository.
+      The contents of this file will be used as the release notes.
+    required: false
+    default: "RELEASE_NOTES.md"
+  upload_files:
+    description: >
+      The files to be uploaded as release assets. It will be passed directly
+      using the shell, so it can be a glob pattern.
+
+      If empty, nothing will be uploaded.
+    required: false
+    default: ""
+  github_token:
+    description: >
+      The GitHub token to use for authentication. This is required to create
+      the release. It requires write permission.
+    required: false
+    default: ${{ github.token }}
+
+
+# Refer to the following link(s) for more information on the composite run steps:
+# https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions#runs
+runs:
+  using: "composite"
+  steps:
+    - name: Download release notes
+      shell: bash
+      env:
+        REF: ${{ github.ref }}
+        REPOSITORY: ${{ github.repository }}
+        GH_TOKEN: ${{ inputs.github_token }}
+        RELEASE_NOTES_FILE: ${{ inputs.release_notes_file }}
+      run: |
+        set -euo pipefail
+        gh api \
+            -X GET \
+            -f "ref=$REF" \
+            -H "Accept: application/vnd.github.raw" \
+            "/repos/$REPOSITORY/contents/$RELEASE_NOTES_FILE" \
+          > RELEASE_NOTES.md
+
+    - name: Create GitHub release
+      shell: bash
+      env:
+        REF_NAME: ${{ github.ref_name }}
+        REPOSITORY: ${{ github.repository }}
+        GH_TOKEN: ${{ inputs.github_token }}
+        UPLOAD_FILES: ${{ inputs.upload_files }}
+      run: |
+        set -euo pipefail
+        extra_opts=()
+        if [[ "$REF_NAME" == *-* ]]; then
+          extra_opts+=(--prerelease)
+        fi
+
+        # Keep user-controlled upload patterns out of the shell source and pass
+        # them to `gh` as argv entries instead. This avoids direct interpolation.
+        release_args=("$REF_NAME")
+        if [[ -n "$UPLOAD_FILES" ]]; then
+          shopt -s nullglob
+          for pattern in $UPLOAD_FILES; do
+            # Expand matching globs here so the shell handles only pathname
+            # expansion, not command construction from the input value.
+            matches=($pattern)
+            if ((${#matches[@]} > 0)); then
+              release_args+=("${matches[@]}")
+            else
+              release_args+=("$pattern")
+            fi
+          done
+        fi
+
+        gh release create \
+          -R "$REPOSITORY" \
+          --notes-file RELEASE_NOTES.md \
+          --generate-notes \
+          "${extra_opts[@]}" \
+          "${release_args[@]}"
